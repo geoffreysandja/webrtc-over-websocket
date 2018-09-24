@@ -1,0 +1,198 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require('../app');
+var debug = require('debug')('webrtc-express:server');
+var http = require('http');
+var https = require('https');
+var WebSocket=require('ws');
+var fs = require('fs');
+/**
+ * Get port from environment and store in Express.
+ */
+var sslOptions = {
+  key: fs.readFileSync('key.pem'),
+  cert: fs.readFileSync('cert.pem'),
+  passphrase:'jiffeo'
+};
+
+var port = normalizePort(process.env.PORT || '3000');
+app.set('port', port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+var secure_server=https.createServer(sslOptions, app);
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+secure_server.listen(3777);
+var wss=new WebSocket.Server({server:secure_server});
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+var users={};
+
+function sendTo(conn,message){
+    conn.send(JSON.stringify(message));
+}
+wss.on('connection', function(connection){
+  console.log('User Connected');
+
+  connection.on('message',function(message){
+      //console.log('Got message:',message);
+      var data;
+      try{
+          data=JSON.parse(message);
+      }catch(e){
+          console.log("Error Parsing JSON");
+          data={};
+      }
+      switch(data.type){
+          case "login":
+              console.log('User logged in as',data.name);
+              if(users[data.name]){
+                  sendTo(connection,{type:'login',success:false});
+
+              }else{
+                  users[data.name]=connection;
+                  connection.name=data.name;
+                  sendTo(connection,{type:'login',success:true});
+              }
+              break;
+          case "offer":
+              console.log('Sending offer to ',data.name);
+              var conn=users[data.name];
+
+              if(conn!=null){
+                  connection.otherName=data.name;
+                  sendTo(conn,{
+                      type:'offer',
+                      offer:data.offer,
+                      name:connection.name
+                  });
+              }
+              break;
+          case "answer":
+              console.log('Sending answer to:',data.name);
+              var conn=users[data.name];
+
+              if(conn != null){
+                  connection.otherName= data.name;
+                  sendTo(conn,{type:'answer',answer:data.answer});
+              }
+              break;
+          case "candidate":
+              console.log("Sending candidate to:",data.name);
+              var conn=users[data.name];
+
+              if(conn!=null){
+                  sendTo(conn,{type:'candidate',candidate:data.candidate});
+
+              }
+              break;
+          case "leave":
+              console.log("Disconnecting user from",data.name);
+              var conn=users[data.name];
+              conn.otherName= null;
+
+              if(conn!=null){
+                  sendTo(conn,{type:'leave'});
+              }
+              break;
+          default:
+              sendTo(connection,{type:"error",message:"Unrecognized command:"+data.type});
+              break;
+      }
+  });
+  connection.on('close',function(){
+      if(connection.name){
+          delete users[connection.name];
+          if(connection.otherName){
+              console.log("Disconnecting user from",connection.otherName);
+              var conn = users[connection.otherName];
+              conn.otherName = null;
+              if (conn != null) {
+                  sendTo(conn, {
+                          type:'leave'
+                          }); 
+                  }
+          }
+      }
+      
+      console.log('Connection Closed');
+  });
+  connection.send('Hello World');
+
+  //send immediatly a feedback to the incoming connection    
+  connection.send('Hi there, I am a WebSocket server');
+});
+
+
+//secure_server.on('error', onError);
+//secure_server.on('listening', onListening);
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  debug('Listening on ' + bind);
+}
